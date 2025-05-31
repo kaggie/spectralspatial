@@ -1,11 +1,18 @@
 import torch
 import math
 from typing import List, Tuple
+import torch.nn.functional as F # For conv1d
+from mri_pulse_library.core.dsp_utils import spectral_factorization_cepstral
+from fir_designer import FIRFilterDesigner # Assuming fir_designer.py is at root
 
 class SLRTransform:
     """
     Implements transformations related to Shinnar-Le Roux (SLR) RF pulse design.
     """
+    def __init__(self):
+        """Initializes the SLRTransform class."""
+        self._a_coeffs_last = None
+        self._b_coeffs_last = None
 
     def magnetization_to_b_poly_specs(
         self, 
@@ -217,4 +224,303 @@ class SLRTransform:
         # Beta(z) = FIR filter. Alpha(z)Alpha*(1/z*) + Beta(z)Beta*(1/z*) = 1
         # This involves spectral factorization of 1 - Beta(z)Beta*(1/z*) to get Alpha(z).
         # Then RF(t) is related to IFFT(Alpha(z)) and IFFT(Beta(z)).
-        raise NotImplementedError("SLR B-polynomial to RF conversion (b2rf equivalent) is not yet implemented.")
+        # raise NotImplementedError("SLR B-polynomial to RF conversion (b2rf equivalent) is not yet implemented.")
+    # Replacing with the full implementation:
+    def b_poly_to_rf(self,
+                     b_poly_coeffs: torch.Tensor,
+                     pulse_type: str = 'ex',
+                     nfft_factor: int = 4, # Factor to determine NFFT based on input length
+                     device: str = 'cpu'
+                     ) -> torch.Tensor:
+        """
+        Converts B-polynomial coefficients (Beta(z)) to a complex RF pulse waveform.
+
+        This implementation uses spectral factorization to find A(z) such that
+        A(z)A*(1/z*) + B(z)B*(1/z*) = 1, and then calculates the RF pulse
+        based on A(z) and B(z).
+
+        Args:
+            b_poly_coeffs (torch.Tensor): 1D tensor of real coefficients for the
+                                          B-polynomial B(z). Length L_b.
+            pulse_type (str, optional): Type of pulse. Currently supports 'ex' (excitation).
+                                        Future support for 'se', 'inv', 'sat'. Defaults to 'ex'.
+            nfft_factor (int, optional): Factor to multiply with polynomial length to get NFFT
+                                         for spectral operations. Ensures sufficient resolution.
+                                         Defaults to 4.
+            device (str, optional): PyTorch device ('cpu' or 'cuda'). Defaults to 'cpu'.
+
+        Returns:
+            torch.Tensor: 1D complex tensor representing the time-domain RF pulse
+                          waveform (unitless shape), of the same length as b_poly_coeffs.
+        """
+        dev = torch.device(device)
+        # Ensure b_coeffs is float32 for internal calculations, to match spectral_factorization_cepstral if it defaults to float32
+        b_coeffs = b_poly_coeffs.to(device=dev, dtype=torch.float32)
+
+        if b_coeffs.ndim != 1:
+            raise ValueError("b_poly_coeffs must be a 1D tensor.")
+
+        L_b = len(b_coeffs)
+        if L_b == 0:
+            return torch.tensor([], device=dev, dtype=torch.complex64)
+
+        # --- 1. Compute P(z) = 1 - B(z)B*(z^-1) ---
+        # B*(z^-1) for real b_coeffs is just b_coeffs reversed in time.
+        b_coeffs_rev = torch.flip(b_coeffs, dims=[0])
+
+        bb_star_coeffs = F.conv1d(b_coeffs.view(1, 1, -1),
+                                  b_coeffs_rev.view(1, 1, -1),
+                                  padding='full').squeeze() # Length 2*L_b - 1
+
+        p_coeffs = torch.zeros_like(bb_star_coeffs, device=dev, dtype=torch.float32)
+        center_idx_p = L_b - 1 # Center of p_coeffs (length 2*L_b - 1)
+        p_coeffs[center_idx_p] = 1.0
+        p_coeffs = p_coeffs - bb_star_coeffs
+
+        # --- 2. Spectral Factorization of P(z) to get A(z) ---
+        # A(z) should also have length L_b
+        # Ensure nfft is at least the length of p_coeffs for spectral_factorization_cepstral
+        min_nfft_spec_fact = len(p_coeffs)
+        nfft_spec_fact = nfft_factor * min_nfft_spec_fact
+        if nfft_spec_fact < min_nfft_spec_fact : nfft_spec_fact = min_nfft_spec_fact
+
+
+        # Make sure spectral_factorization_cepstral is imported
+        # from mri_pulse_library.core.dsp_utils import spectral_factorization_cepstral
+        a_coeffs = spectral_factorization_cepstral(
+            p_coeffs_real_symmetric=p_coeffs,
+            target_a_length=L_b,
+            nfft=nfft_spec_fact
+        ).to(device=dev, dtype=torch.float32)
+
+        # Store for potential debugging or advanced checks (optional)
+        self._a_coeffs_last = a_coeffs
+        self._b_coeffs_last = b_coeffs
+
+        # --- 3. Calculate RF pulse from A(z) and B(z) ---
+        min_nfft_rf = L_b
+        nfft_rf = nfft_factor * min_nfft_rf
+        if nfft_rf < min_nfft_rf: nfft_rf = min_nfft_rf
+
+
+        if pulse_type == 'ex':
+            # For excitation: RF(z) = B(z) / A_star_reflected(z)
+            # A_star_reflected(z) means A*(1/z*). For real a_coeffs, this is time-reversed a_coeffs.
+            a_coeffs_star_reflected = torch.flip(a_coeffs, dims=[0])
+
+            B_omega = torch.fft.fft(b_coeffs, n=nfft_rf)
+            A_star_reflected_omega = torch.fft.fft(a_coeffs_star_reflected, n=nfft_rf)
+
+            RF_omega = B_omega / (A_star_reflected_omega + 1e-12) # Add epsilon for stability
+
+            rf_pulse_full = torch.fft.ifft(RF_omega)
+            rf_pulse = rf_pulse_full[:L_b].to(dtype=torch.complex64)
+
+        # elif pulse_type in ['se', 'inv', 'sat']:
+            # For refocusing (symmetric B(z)): RF(z) = B(z) / A(z)
+            # A_omega = torch.fft.fft(a_coeffs, n=nfft_rf)
+            # B_omega = torch.fft.fft(b_coeffs, n=nfft_rf)
+            # RF_omega = B_omega / (A_omega + 1e-12) # Add epsilon
+            # rf_pulse_full = torch.fft.ifft(RF_omega)
+            # rf_pulse = rf_pulse_full[:L_b].to(dtype=torch.complex64)
+            # raise NotImplementedError(f"SLR RF calculation for pulse_type '{pulse_type}' is not fully verified/implemented yet.")
+        else:
+            raise NotImplementedError(f"SLR RF calculation for pulse_type '{pulse_type}' is not yet implemented.")
+
+        return rf_pulse
+
+    def design_rf_pulse_from_mag_specs(
+        self,
+        desired_mag_ripples: List[float],
+        desired_mag_amplitudes: List[float],
+        nominal_flip_angle_rad: float,
+        pulse_type: str,
+        num_taps_b_poly: int,
+        # Parameters for FIR design of B(z) - using Parks-McClellan for this example
+        fir_bands_normalized: List[float], # e.g., [0, f_pass, f_stop, 1.0] (Nyquist=1.0)
+        fir_desired_b_gains: List[float],  # e.g., [1, 0] for B(z) as lowpass
+        fir_weights: List[float] = None,   # Weights for FIR design bands
+        nfft_factor_b2rf: int = 4,         # NFFT factor for b_poly_to_rf
+        device: str = 'cpu'
+    ) -> Tuple[torch.Tensor, float]:
+        """
+        Designs an RF pulse from magnetization profile specifications using the SLR method.
+
+        This method orchestrates the following steps:
+        1. Converts magnetization specs to B-polynomial specifications using
+           `magnetization_to_b_poly_specs`.
+        2. Designs the B-polynomial FIR filter coefficients using Parks-McClellan
+           (`FIRFilterDesigner.design_parks_mcclellan_real`).
+        3. Normalizes the B-polynomial coefficients to ensure max|B(e^jω)| <= 1.
+        4. Converts the B-polynomial coefficients to an RF pulse using `b_poly_to_rf`.
+
+        Args:
+            desired_mag_ripples (List[float]): Ripples in the target magnetization profile
+                                               (e.g., [d_pass, d_stop]).
+            desired_mag_amplitudes (List[float]): Amplitudes in the target magnetization
+                                                  profile (e.g., [1, 0] for Mxy excitation).
+            nominal_flip_angle_rad (float): Overall target flip angle in radians.
+            pulse_type (str): Type of pulse ('ex', 'se', 'inv', 'sat').
+            num_taps_b_poly (int): Number of taps for the B-polynomial FIR filter.
+            fir_bands_normalized (List[float]): Frequency band edges for FIR design of B(z),
+                                                normalized to Nyquist (0 to 1.0).
+                                                E.g., [0, f_pass, f_stop, 1.0].
+            fir_desired_b_gains (List[float]): Desired gains for B(z) in each band defined
+                                               by fir_bands_normalized. Length must be
+                                               len(fir_bands_normalized)/2. E.g., [1,0] for lowpass B.
+            fir_weights (List[float], optional): Weights for each band in FIR design.
+                                                 Defaults to equal weights if None.
+            nfft_factor_b2rf (int, optional): NFFT factor for b_poly_to_rf step. Defaults to 4.
+            device (str, optional): PyTorch device ('cpu' or 'cuda'). Defaults to 'cpu'.
+
+        Returns:
+            Tuple[torch.Tensor, float]: A tuple containing:
+                - rf_pulse (torch.Tensor): The designed complex RF pulse waveform (unitless shape).
+                - adjusted_flip_angle_rad (float): The potentially adjusted overall flip angle.
+        """
+        dev = torch.device(device)
+
+        # 1. Convert magnetization specs to B-polynomial specifications
+        _, _, adjusted_flip_angle_rad = self.magnetization_to_b_poly_specs(
+            desired_mag_ripples, desired_mag_amplitudes, nominal_flip_angle_rad, pulse_type, device
+        )
+
+        # 2. Design B-polynomial FIR filter coefficients
+        if fir_weights is None:
+            fir_weights = [1.0] * len(fir_desired_b_gains)
+
+        b_poly_coeffs = FIRFilterDesigner.design_parks_mcclellan_real(
+            num_taps=num_taps_b_poly,
+            bands_normalized=fir_bands_normalized,
+            desired_amplitudes=fir_desired_b_gains,
+            weights=fir_weights,
+            device=dev
+        ).to(dtype=torch.float32)
+
+        # 3. Normalize B-polynomial coefficients so that max|B(e^jω)| <= 1
+        nfft_check = 2 * len(b_poly_coeffs)
+        B_omega_check = torch.fft.fft(b_poly_coeffs, n=nfft_check)
+        max_abs_B_omega = torch.max(torch.abs(B_omega_check))
+
+        if max_abs_B_omega.item() > 1.0 + 1e-6:
+            print(f"Warning: Max|B(e^jω)| = {max_abs_B_omega.item():.4f} > 1. Normalizing b_poly_coeffs.")
+            b_poly_coeffs = b_poly_coeffs / max_abs_B_omega
+        elif max_abs_B_omega.item() == 0.0:
+             print("Warning: B-polynomial is all zeros. RF pulse will be zero.")
+
+        # 4. Convert B-polynomial to RF pulse
+        rf_pulse = self.b_poly_to_rf(
+            b_poly_coeffs=b_poly_coeffs,
+            pulse_type=pulse_type,
+            nfft_factor=nfft_factor_b2rf,
+            device=dev
+        )
+
+        return rf_pulse, adjusted_flip_angle_rad
+
+if __name__ == '__main__':
+    print("SLRTransform class defined.")
+    slr_transformer = SLRTransform() # Instantiate the class
+
+    # Example for magnetization_to_b_poly_specs (using its actual signature)
+    print("\n--- magnetization_to_b_poly_specs Example ---")
+    try:
+        ripples = [0.01, 0.01]
+        amplitudes = [1.0, 0.0]
+        flip_angle = math.pi / 2.0
+        pulse_type_ex = 'ex'
+        device_ex = 'cpu'
+        b_rips, b_amps, adj_flip = slr_transformer.magnetization_to_b_poly_specs(
+            ripples, amplitudes, flip_angle, pulse_type_ex, device_ex
+        )
+        print(f"For Mxy_specs (rips={ripples}, amps={amplitudes}, flip={flip_angle:.2f}rad, type='{pulse_type_ex}'):")
+        print(f"  B-poly ripples: {b_rips.tolist()}")
+        print(f"  B-poly amplitudes: {b_amps.tolist()}")
+        print(f"  Adjusted flip angle: {adj_flip:.2f}rad")
+
+    except Exception as e:
+        print(f"Error in magnetization_to_b_poly_specs example: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # ... (The rest of the __main__ block for b_poly_to_rf example, copied from
+    #      mri_pulse_library/slr_transform.py, can largely remain as is,
+    #      but ensure it calls slr_transformer.b_poly_to_rf(...) correctly) ...
+    # ... (The FIRFilterDesigner import and usage should be fine if fir_designer.py is at root)
+    # ... (The manual b_coeffs fallback is also fine)
+    # ... (The check for A*A + B*B should also be fine)
+    print("\n--- b_poly_to_rf Example ---")
+
+    try:
+        # from mri_pulse_library.simulators.fir_designer import FIRFilterDesigner # Path if it was in simulators
+        # Assuming fir_designer.py is at the root, alongside slr_transform.py
+        # from fir_designer import FIRFilterDesigner # This should now be at the top of the file
+        fir_designer_available = True # Assume it's imported at top
+    except NameError: # If FIRFilterDesigner was not imported due to path issues at top
+        print("FIRFilterDesigner class not available (check import at top of file).")
+        fir_designer_available = False
+
+
+    if fir_designer_available:
+        try:
+            num_taps_b = 31
+            bands_fir = [0, 0.2, 0.3, 1.0]
+            desired_fir_gains = [1, 0]
+            weights_fir = [1, 1]
+
+            b_coeffs_example = FIRFilterDesigner.design_parks_mcclellan_real(
+                num_taps=num_taps_b,
+                bands_normalized=bands_fir,
+                desired_amplitudes=desired_fir_gains,
+                weights=weights_fir,
+                device='cpu'
+            )
+            print(f"Example b_poly_coeffs (L={len(b_coeffs_example)}): {b_coeffs_example[:5].numpy()}...{b_coeffs_example[-5:].numpy()}")
+
+            B_omega_val = torch.fft.fft(b_coeffs_example, n=1024)
+            max_B_mag = torch.max(torch.abs(B_omega_val))
+            if max_B_mag > 1.0:
+                print(f"Normalizing b_coeffs_example by factor: {max_B_mag.item()}")
+                b_coeffs_example /= max_B_mag
+
+            # Use the already instantiated slr_transformer
+            rf_pulse_example = slr_transformer.b_poly_to_rf(b_coeffs_example, pulse_type='ex', device='cpu')
+
+            print(f"Generated RF pulse shape (first 5 points): {rf_pulse_example[:5].real.numpy()} + 1j*{rf_pulse_example[:5].imag.numpy()}")
+            print(f"RF pulse length: {len(rf_pulse_example)}")
+
+            if hasattr(slr_transformer, '_a_coeffs_last') and slr_transformer._a_coeffs_last is not None:
+                a_coeffs_check = slr_transformer._a_coeffs_last
+                A_omega_check = torch.fft.fft(a_coeffs_check, n=1024)
+                B_omega_check = torch.fft.fft(b_coeffs_example, n=1024)
+                sum_sq_mag_freq = torch.abs(A_omega_check)**2 + torch.abs(B_omega_check)**2
+                print(f"Check: Mean of |A(omega)|^2 + |B(omega)|^2: {torch.mean(sum_sq_mag_freq).item()} (should be close to 1.0)")
+                if not (0.9 < torch.mean(sum_sq_mag_freq).item() < 1.1):
+                     print("Warning: |A|^2 + |B|^2 is not close to 1. Check filter design or factorization.")
+            else:
+                print("Could not perform A*A+B*B check as _a_coeffs_last was not available.")
+
+        except ImportError:
+            print("FIRFilterDesigner import failed inside try block, using very simple manual b_coeffs for b_poly_to_rf example.")
+            b_coeffs_manual = torch.tensor([0.1, 0.1, 0.6, 0.1, 0.1], dtype=torch.float32)
+            B_omega_manual = torch.fft.fft(b_coeffs_manual, n=1024)
+            if torch.max(torch.abs(B_omega_manual)) > 1.0:
+                 b_coeffs_manual /= torch.max(torch.abs(B_omega_manual))
+            rf_pulse_manual = slr_transformer.b_poly_to_rf(b_coeffs_manual, pulse_type='ex', device='cpu')
+            print(f"Generated RF pulse with manual b_coeffs (first 5 points): {rf_pulse_manual[:5].real.numpy()} + 1j*{rf_pulse_manual[:5].imag.numpy()}")
+            print(f"RF pulse length: {len(rf_pulse_manual)}")
+        except NotImplementedError as e:
+            print(f"Caught expected error for other pulse types: {e}")
+        except Exception as e_main:
+            import traceback
+            traceback.print_exc()
+            print(f"Error in b_poly_to_rf example with FIRFilterDesigner: {e_main}")
+    else: # If fir_designer_available is False from the start
+        print("FIRFilterDesigner not available, using very simple manual b_coeffs for b_poly_to_rf example.")
+        b_coeffs_manual = torch.tensor([0.1, 0.1, 0.6, 0.1, 0.1], dtype=torch.float32)
+        B_omega_manual = torch.fft.fft(b_coeffs_manual, n=1024)
+        if torch.max(torch.abs(B_omega_manual)) > 1.0:
+            b_coeffs_manual /= torch.max(torch.abs(B_omega_manual))
+        rf_pulse_manual = slr_transformer.b_poly_to_rf(b_coeffs_manual, pulse_type='ex', device='cpu')
+        print(f"Generated RF pulse with manual b_coeffs (first 5 points): {rf_pulse_manual[:5].real.numpy()} + 1j*{rf_pulse_manual[:5].imag.numpy()}")
+        print(f"RF pulse length: {len(rf_pulse_manual)}")
