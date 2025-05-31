@@ -31,6 +31,47 @@ The designer uses an iterative optimization algorithm to find the RF and gradien
 *   `cost_mask` (torch.Tensor, optional): Voxel-wise mask for cost calculation. Shape `(Nx, Ny, Nz)`.
 *   `cost_component_weights` (tuple, optional): Weights for `(Mx, My, Mz)` error components in the cost function.
 
+### SAR and Gradient Constraints
+
+The `SpokesPulseDesigner` can incorporate constraints related to Specific Absorption Rate (SAR) surrogates and total gradient power during optimization. This helps in designing pulses that are mindful of patient safety limits and hardware constraints.
+
+These constraints are controlled via parameters in the `__init__` method:
+
+**RF/SAR Constraints:**
+
+*   `sar_constraint_mode` (str, default: `'none'`): Determines the type of SAR-related constraint for RF.
+    *   `'none'`: No RF/SAR constraints are applied.
+    *   `'local_b1_sq_peak'`: Penalizes if the peak squared B1+ magnitude (summed over channels, maximized over time and space) exceeds a limit. This serves as a surrogate for local SAR hotspots. Requires `local_b1_sq_limit_tesla_sq` to be set.
+    *   `'total_rf_power'`: Penalizes if the total RF energy (approximated by `sum(|RF_waveforms|^2 * dt_s)`) exceeds a limit. This is a surrogate for global average SAR. Requires `total_rf_power_limit` to be set.
+*   `sar_lambda` (float, default: `1.0`): The weighting factor (penalty multiplier) for the RF/SAR constraint term in the cost function.
+*   `local_b1_sq_limit_tesla_sq` (float, optional): The limit for the peak local `|B1+|^2` in Tesla^2. Required if `sar_constraint_mode` is `'local_b1_sq_peak'`. (e.g., `(2.5e-6)**2` for a 2.5 µT B1+ peak limit).
+*   `total_rf_power_limit` (float, optional): The limit for `sum(|RF_waveforms|^2 * dt_s)`. Required if `sar_constraint_mode` is `'total_rf_power'`.
+
+**Gradient Constraints:**
+
+*   `constrain_gradient_power` (bool, default: `False`): If `True`, enables a penalty on the total gradient power.
+*   `gradient_power_lambda` (float, default: `1.0`): The weighting factor for the gradient power penalty.
+*   `total_gradient_power_limit` (float, optional): The limit for `sum(|Gx(t)|^2 + |Gy(t)|^2 + |Gz(t)|^2) * dt_s`. Required if `constrain_gradient_power` is `True`. This helps to limit peripheral nerve stimulation (PNS) or hardware demands.
+
+**Note on Approximations:**
+The SAR constraints are based on surrogates (B1+ field magnitude for local SAR, total RF power for global SAR). Actual SAR depends on E-fields and detailed tissue models. The gradient power constraint is a general measure of gradient activity.
+
+**Example: Initializing with Constraints**
+
+```python
+designer = SpokesPulseDesigner(
+    # ... other initialization parameters ...
+    sar_constraint_mode='local_b1_sq_peak',
+    sar_lambda=1e8,  # Adjust based on cost function scale
+    local_b1_sq_limit_tesla_sq=(2.0e-6)**2, # Limit B1+ peak to 2.0 µT
+
+    constrain_gradient_power=True,
+    gradient_power_lambda=1e4, # Adjust based on cost function scale
+    total_gradient_power_limit=1e-5 # Example limit for sum(|G|^2*dt) in (T/m)^2*s
+)
+```
+During the `design_spokes_pulse` optimization, if the calculated values exceed these limits, corresponding penalty terms are added to the cost function, guiding the optimizer towards solutions that satisfy the constraints.
+
 ### Example Usage Snippet
 
 ```python

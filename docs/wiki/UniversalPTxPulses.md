@@ -28,6 +28,37 @@ The designer iteratively refines a set of RF waveforms (one for each transmit ch
 *   `learning_rate` (float, optional): Learning rate for the optimizer.
 *   `optimizer_type` (str, optional): Type of optimizer ('Adam' or 'LBFGS').
 
+### SAR Constraints
+
+The `UniversalPulseDesigner` can incorporate constraints related to Specific Absorption Rate (SAR) surrogates during optimization. This helps in designing pulses that are mindful of patient safety limits.
+
+These constraints are controlled via parameters in the `__init__` method:
+
+*   `sar_constraint_mode` (str, default: `'none'`): Determines the type of SAR-related constraint.
+    *   `'none'`: No SAR constraints are applied.
+    *   `'local_b1_sq_peak'`: Penalizes if the peak squared B1+ magnitude (summed over channels, maximized over time and space) exceeds a limit. This serves as a surrogate for local SAR hotspots. Requires `local_b1_sq_limit_tesla_sq` to be set.
+    *   `'total_rf_power'`: Penalizes if the total RF energy (approximated by `sum(|RF_waveforms|^2 * dt_s)`) exceeds a limit. This is a surrogate for global average SAR. Requires `total_rf_power_limit` to be set.
+*   `sar_lambda` (float, default: `1.0`): The weighting factor (penalty multiplier) for the SAR constraint term in the cost function. Higher values enforce the constraint more strictly.
+*   `local_b1_sq_limit_tesla_sq` (float, optional): The limit for the peak local `|B1+|^2` in Tesla^2. Required if `sar_constraint_mode` is `'local_b1_sq_peak'`. For example, a B1+ peak limit of 3 µT would correspond to a limit of `(3e-6)**2 = 9e-12` T^2.
+*   `total_rf_power_limit` (float, optional): The limit for the sum of squared RF waveform amplitudes multiplied by `dt_s`. This is a surrogate for total RF energy. Required if `sar_constraint_mode` is `'total_rf_power'`. The units depend on how RF waveforms are scaled; if RF waveforms are unitless scaling factors for B1 maps in Tesla, this limit is on `sum(|scales|^2 * dt_s)`. If RF waveforms are directly in Tesla, then it's `sum(|Tesla|^2 * dt_s)`.
+
+**Note on Approximations:**
+The SAR constraints implemented are based on surrogates:
+-   `local_b1_sq_peak` uses the squared magnitude of the B1+ field as an indicator for potential local SAR hotspots. Actual local SAR depends on electric fields and tissue properties, which are more complex to model directly in the optimization loop.
+-   `total_rf_power` relates to the overall energy deposited by the RF pulse, which is a factor in global average SAR.
+
+**Example: Initializing with a Local B1 Peak Constraint**
+
+```python
+designer = UniversalPulseDesigner(
+    # ... other initialization parameters ...
+    sar_constraint_mode='local_b1_sq_peak',
+    sar_lambda=1e7,  # Adjust this based on cost function scale
+    local_b1_sq_limit_tesla_sq=(2.5e-6)**2 # Limit B1+ peak to 2.5 µT
+)
+```
+During the `design_pulse` optimization, if the calculated peak local `|B1+|^2` (for any subject in the database) exceeds this limit, a penalty term is added to the cost function, guiding the optimizer towards solutions that satisfy the constraint.
+
 ### Example Usage Snippet
 
 ```python
