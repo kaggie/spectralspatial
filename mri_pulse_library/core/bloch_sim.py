@@ -240,3 +240,127 @@ def apply_relaxation(M, dt, T1, T2, M0=1.0):
     M_new_z = M[2] * E1 + M0 * (1 - E1) # M0 is equilibrium magnetization along z
 
     return torch.tensor([M_new_x, M_new_y, M_new_z], dtype=torch.float32, device=M.device)
+
+
+def bloch_simulate_ptx(
+    rf_waveforms_per_channel,
+    b1_sensitivity_maps,
+    dt_s,
+    b0_map_hz,
+    T1_map_s,
+    T2_map_s,
+    gyromagnetic_ratio_hz_t,
+    initial_magnetization,
+    return_all_timepoints=False
+):
+    """
+    Simulates the Bloch equations for parallel transmit (pTx) RF pulses
+    on a 3D spatial grid using PyTorch.
+
+    Args:
+        rf_waveforms_per_channel (torch.Tensor): Complex RF waveforms for each
+            transmit channel. Shape: (num_channels, N_timepoints).
+            Units: Assumed to be scaling factors for b1_sensitivity_maps if
+            b1_sensitivity_maps are in Tesla. If b1_sensitivity_maps are unitless
+            (e.g., relative sensitivities), then rf_waveforms_per_channel should
+            be in Tesla.
+        b1_sensitivity_maps (torch.Tensor): Complex B1 sensitivity map for each
+            channel at each spatial voxel. Shape: (num_channels, Nx, Ny, Nz).
+            Units: Tesla (T).
+        dt_s (float): Time step duration in seconds (uniform for all steps).
+        b0_map_hz (torch.Tensor): B0 off-resonance map at each spatial voxel.
+            Shape: (Nx, Ny, Nz). Units: Hertz (Hz).
+        T1_map_s (torch.Tensor): T1 relaxation time map.
+            Shape: (Nx, Ny, Nz). Units: seconds (s).
+        T2_map_s (torch.Tensor): T2 relaxation time map.
+            Shape: (Nx, Ny, Nz). Units: seconds (s).
+        gyromagnetic_ratio_hz_t (float): Gyromagnetic ratio.
+            Units: Hertz per Tesla (Hz/T).
+        initial_magnetization (torch.Tensor): Initial magnetization state [Mx, My, Mz]
+            for each voxel. Shape: (Nx, Ny, Nz, 3).
+        return_all_timepoints (bool, optional): If True, returns the magnetization
+            state at all time points. Otherwise, returns only the final state.
+            Defaults to False.
+
+    Returns:
+        torch.Tensor: Magnetization state.
+            If return_all_timepoints is True: Shape (N_timepoints, Nx, Ny, Nz, 3).
+            Else: Shape (Nx, Ny, Nz, 3).
+
+    Note:
+        This function currently iterates over spatial voxels for rotation and
+        relaxation steps. Future optimizations could involve batching these
+        operations if the core `rotate_magnetization` and `apply_relaxation`
+        functions are adapted for batch processing.
+        Assumes all input tensors are on the same PyTorch device.
+    """
+    device = rf_waveforms_per_channel.device
+    num_channels = rf_waveforms_per_channel.shape[0]
+    N_timepoints = rf_waveforms_per_channel.shape[1]
+
+    if b1_sensitivity_maps.shape[0] != num_channels:
+        raise ValueError("Number of channels in rf_waveforms_per_channel and b1_sensitivity_maps must match.")
+
+    Nx, Ny, Nz = b1_sensitivity_maps.shape[1], b1_sensitivity_maps.shape[2], b1_sensitivity_maps.shape[3]
+
+    # Basic shape validation for maps
+    expected_spatial_shape = (Nx, Ny, Nz)
+    if b0_map_hz.shape != expected_spatial_shape:
+        raise ValueError(f"b0_map_hz shape mismatch. Expected {expected_spatial_shape}, got {b0_map_hz.shape}")
+    if T1_map_s.shape != expected_spatial_shape:
+        raise ValueError(f"T1_map_s shape mismatch. Expected {expected_spatial_shape}, got {T1_map_s.shape}")
+    if T2_map_s.shape != expected_spatial_shape:
+        raise ValueError(f"T2_map_s shape mismatch. Expected {expected_spatial_shape}, got {T2_map_s.shape}")
+    if initial_magnetization.shape != (Nx, Ny, Nz, 3):
+        raise ValueError(f"initial_magnetization shape mismatch. Expected {(*expected_spatial_shape, 3)}, got {initial_magnetization.shape}")
+
+    M = initial_magnetization.clone().to(device)
+    b1_sensitivity_maps = b1_sensitivity_maps.to(device)
+    b0_map_hz = b0_map_hz.to(device)
+    T1_map_s = T1_map_s.to(device)
+    T2_map_s = T2_map_s.to(device)
+    rf_waveforms_per_channel = rf_waveforms_per_channel.to(device)
+
+
+    if return_all_timepoints:
+        M_time_course = torch.zeros((N_timepoints, Nx, Ny, Nz, 3), dtype=M.dtype, device=device)
+
+    b0_map_tesla = b0_map_hz / gyromagnetic_ratio_hz_t
+
+    M_flat = M.reshape(-1, 3)
+    b0_map_tesla_flat = b0_map_tesla.reshape(-1)
+    T1_map_s_flat = T1_map_s.reshape(-1)
+    T2_map_s_flat = T2_map_s.reshape(-1)
+    initial_M0_flat = initial_magnetization.reshape(-1, 3)[:, 2].clone().to(device)
+
+    b1_sens_flat = b1_sensitivity_maps.reshape(num_channels, -1)
+    N_voxels = M_flat.shape[0]
+
+    for t in range(N_timepoints):
+        current_rf_amps = rf_waveforms_per_channel[:, t]
+
+        b1_eff_t_tesla_flat = torch.sum(current_rf_amps.unsqueeze(1) * b1_sens_flat, dim=0)
+
+        for v_idx in range(N_voxels):
+            b1_eff_voxel_t = b1_eff_t_tesla_flat[v_idx]
+
+            b_eff_x_tesla = b1_eff_voxel_t.real
+            b_eff_y_tesla = b1_eff_voxel_t.imag
+            b_eff_z_tesla = b0_map_tesla_flat[v_idx]
+
+            B_eff_tesla_voxel = torch.stack([b_eff_x_tesla, b_eff_y_tesla, b_eff_z_tesla])
+
+            M_voxel = M_flat[v_idx, :]
+
+            M_rotated = rotate_magnetization(M_voxel, B_eff_tesla_voxel, dt_s, gyromagnetic_ratio_hz_t)
+            M_relaxed = apply_relaxation(M_rotated, dt_s, T1_map_s_flat[v_idx], T2_map_s_flat[v_idx], M0=initial_M0_flat[v_idx])
+
+            M_flat[v_idx, :] = M_relaxed
+
+        if return_all_timepoints:
+            M_time_course[t, ...] = M_flat.reshape(Nx, Ny, Nz, 3)
+
+    if return_all_timepoints:
+        return M_time_course
+    else:
+        return M_flat.reshape(Nx, Ny, Nz, 3)
