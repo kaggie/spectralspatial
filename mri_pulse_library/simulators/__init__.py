@@ -12,6 +12,8 @@ from .bloch_simulator import (
 from .pulse_validator import validate_pulse_performance, PulseValidationMetrics, analyze_slice_profile
 # Import from the new universal pulse designer
 from .universal_pulse_designer import UniversalPulseDesigner
+# Import from the new adiabatic CEST simulator
+from .adiabatic_cest_simulator import AdiabaticCESTSimulator
 
 __all__ = [
     'simulate_hard_pulse_profile',
@@ -25,5 +27,6 @@ __all__ = [
     'validate_pulse_performance',
     'PulseValidationMetrics',
     'analyze_slice_profile',
-    'UniversalPulseDesigner'
+    'UniversalPulseDesigner',
+    'AdiabaticCESTSimulator'
 ]
