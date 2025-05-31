@@ -26,6 +26,21 @@ This package enables rapid and customizable design, simulation, and export of SP
 
 ---
 
+## Supported RF Pulse Types
+
+This library aims to support a comprehensive suite of RF pulses for MRI. Current support and future development will include:
+
+*   **Hard Pulses:** Simple rectangular pulses for basic excitation.
+*   **Slice-Selective Pulses:** Shaped pulses (e.g., sinc, Gaussian) for exciting specific anatomical slices. *Currently supported via SPSP designer for shaped pulses.*
+*   **Spectral-Spatial Pulses:** For simultaneous spatial and spectral selection. *Core feature of this library.*
+*   **Adiabatic Pulses:** Pulses robust to B1 inhomogeneities (e.g., BIR-4, Hyperbolic Secant, WURST, GOIA-WURST). *Planned for future implementation.*
+*   **Composite Pulses:** Series of sub-pulses for robust flip angles and phase response. *Planned for future implementation.*
+*   **Multiband Pulses:** Excite multiple slices simultaneously. *Supported via scripted combination and planned for dedicated design tools.*
+*   **Parallel Transmit (pTx) Pulses:** For B1 shimming and advanced excitation using multiple transmit coils. *Planned for future implementation.*
+*   **Small-Tip Angle Pulses:** For fast gradient echo sequences. *Supported via SPSP designer and Bloch simulation.*
+
+---
+
 ## Installation
 
 ```bash
@@ -125,25 +140,64 @@ pulse = designer.design_pulse(
 
 ---
 
-## Advanced Features
+## Advanced Simulator Capabilities
 
-- **Simulation:**  
-  Bloch simulator and small-tip approximation for validating pulse profiles and spectral selectivity
-- **Analysis and Visualization:**  
-  Frequency/spatial response, k-space trajectory plots, passband/stopband metrics
-- **VERSE:**  
-  Apply variable-rate selective excitation for SAR or hardware limits
-- **Multi-band/Multi-slice:**  
-  Scripted combination of bands or slices for parallel or simultaneous excitation
-- **Exporters:**  
-  Save pulses for Siemens, GE, Philips, Pulseq, and research toolchains
+The `spectralspatial` toolbox aims to provide a comprehensive environment for designing, analyzing, and optimizing RF pulses. Key capabilities include:
 
----
+### Core Simulation & Design
+- **Bloch Equation Solvers:**
+    - 1D, 2D, and 3D Bloch simulations for magnetization evolution.
+    - Support for Bloch-McConnell equations for multi-pool models (e.g., fat-water, CEST, MT) is planned.
+    - Numerical solvers (e.g., Runge-Kutta) for complex pulse shapes.
+- **Pulse Design Algorithms:**
+    - Shinnar-LeRoux (SLR) Algorithm. *Partially supported.*
+    - Optimal Control Theory (OCT) for constrained pulse design. *Future development.*
+    - Adiabatic pulse design tools. *Future development.*
+    - Composite pulse design algorithms. *Future development.*
+    - Multiband pulse design tools. *Supported via scripted combination and planned for dedicated design tools.*
+    - Parallel Transmit (pTx) pulse design. *Future development.*
+    - Small-tip angle approximation for fast simulations. *Supported.*
+- **Flexible Spectral-Spatial Pulse Design**:
+    - Excitation, refocusing, inversion, and saturation pulses.
+    - Control over slice thickness, time-bandwidth, flip angle, pass/stop ripples, spectral bands.
+- **Multiple Filter Types**: Parks-McClellan (PM), Least Squares (LS), Sinc, SLR, and custom.
+- **Gradient Trajectory Support**: Flyback, Echo-Planar (EP), and more.
+- **VERSE Optimization**: Variable Rate Selective Excitation tools for SAR reduction and pulse shortening. *Supported.*
 
-## Interoperability
+### Realistic Environment Modeling
+- **Field Inhomogeneity Modeling:**
+    - B0 inhomogeneity (static field imperfections). *Simulation supports B0 offsets.*
+    - B1 inhomogeneity (transmit RF field variations). *Planned for advanced simulations.*
+- **Gradient Field Modeling:** Representation of gradient fields, including imperfections (future).
+- **RF Coil Modeling:** Incorporating B1+ transmit and B1- receive sensitivities (future).
+- **Phantom and Tissue Models:**
+    - User-defined phantoms with tissue properties (T1, T2, T2*, PD, chemical shift). *Supported via simulation parameters.*
+    - Multi-compartment tissue models (future).
+    - Motion modeling (future).
 
-- **MATLAB/NumPy:**  
-  Load and save `.mat` files, convert between PyTorch tensors and NumPy arrays
+### Performance Analysis & Visualization
+- **Slice Profile Analysis:** Plotting and quantifying excitation profiles (thickness, ripple, transition width, side lobes). *Supported.*
+- **Inversion Profile Analysis:** Quantifying inversion efficiency. *Supported via simulation.*
+- **Flip Angle Mapping:** Generating 2D/3D maps of achieved flip angles. *Supported via simulation.*
+- **Phase Profile Analysis:** Examining phase distribution. *Supported via simulation.*
+- **Specific Absorption Rate (SAR) Calculation:** Quantifying power deposition. *Basic estimation supported, advanced SAR planned.*
+- **Off-Resonance Effects:** Analyzing pulse performance under B0 offsets. *Supported.*
+- **Robustness Analysis:** Evaluating performance across B0/B1 variations (partially supported, planned for expansion).
+- **Visualization Tools:**
+    - Magnetization vector trajectories (future).
+    - Spatial profiles (1D, 2D, 3D). *Supported.*
+    - Time-domain RF/gradient waveforms. *Supported.*
+    - k-space trajectories. *Supported.*
+    - Heat maps/contour plots for field distributions (future).
+
+### Integration & Usability
+- **Pulse Sequence Integration:** Simulating pulses within a complete sequence context (future).
+- **Parameter Optimization Tools:** For automatic pulse parameter tuning (future).
+- **Input/Output:** Import/export in various formats (Siemens, GE, Philips, Pulseq). *Supported.*
+- **Graphical User Interface (GUI):** For intuitive interaction (future).
+- **Scripting API:** For automation and integration (Python-based). *Core feature.*
+- **GPU Acceleration:** For faster simulations. *Supported via PyTorch device selection.*
+- **MATLAB/NumPy Interoperability:** Load/save `.mat` files, tensor/array conversion. *Supported.*
 
 ---
 
