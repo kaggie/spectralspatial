@@ -243,30 +243,27 @@ def apply_relaxation(M, dt, T1, T2, M0=1.0):
 
 
 def bloch_simulate_ptx(
-    rf_waveforms_per_channel,
-    b1_sensitivity_maps,
-    dt_s,
-    b0_map_hz,
-    T1_map_s,
-    T2_map_s,
-    gyromagnetic_ratio_hz_t,
-    initial_magnetization,
-    return_all_timepoints=False
+    rf_waveforms_per_channel: torch.Tensor,
+    b1_sensitivity_maps: torch.Tensor,
+    dt_s: float,
+    b0_map_hz: torch.Tensor,
+    T1_map_s: torch.Tensor,
+    T2_map_s: torch.Tensor,
+    gyromagnetic_ratio_hz_t: float,
+    initial_magnetization: torch.Tensor,
+    spatial_grid_m: torch.Tensor,
+    gradient_waveforms_tm: torch.Tensor = None,
+    return_all_timepoints: bool = False
 ):
     """
     Simulates the Bloch equations for parallel transmit (pTx) RF pulses
-    on a 3D spatial grid using PyTorch.
+    on a 3D spatial grid, including effects of dynamic gradients.
 
     Args:
         rf_waveforms_per_channel (torch.Tensor): Complex RF waveforms for each
             transmit channel. Shape: (num_channels, N_timepoints).
-            Units: Assumed to be scaling factors for b1_sensitivity_maps if
-            b1_sensitivity_maps are in Tesla. If b1_sensitivity_maps are unitless
-            (e.g., relative sensitivities), then rf_waveforms_per_channel should
-            be in Tesla.
         b1_sensitivity_maps (torch.Tensor): Complex B1 sensitivity map for each
-            channel at each spatial voxel. Shape: (num_channels, Nx, Ny, Nz).
-            Units: Tesla (T).
+            channel at each spatial voxel. Shape: (num_channels, Nx, Ny, Nz). Units: Tesla (T).
         dt_s (float): Time step duration in seconds (uniform for all steps).
         b0_map_hz (torch.Tensor): B0 off-resonance map at each spatial voxel.
             Shape: (Nx, Ny, Nz). Units: Hertz (Hz).
@@ -274,36 +271,33 @@ def bloch_simulate_ptx(
             Shape: (Nx, Ny, Nz). Units: seconds (s).
         T2_map_s (torch.Tensor): T2 relaxation time map.
             Shape: (Nx, Ny, Nz). Units: seconds (s).
-        gyromagnetic_ratio_hz_t (float): Gyromagnetic ratio.
-            Units: Hertz per Tesla (Hz/T).
+        gyromagnetic_ratio_hz_t (float): Gyromagnetic ratio. Units: Hertz per Tesla (Hz/T).
         initial_magnetization (torch.Tensor): Initial magnetization state [Mx, My, Mz]
             for each voxel. Shape: (Nx, Ny, Nz, 3).
+        spatial_grid_m (torch.Tensor): Defines the spatial coordinates (x,y,z) for each voxel.
+                                       Shape: (Nx, Ny, Nz, 3). Units: meters (m).
+        gradient_waveforms_tm (torch.Tensor, optional): Time-varying gradient waveforms
+            [Gx(t), Gy(t), Gz(t)]. Shape: (N_timepoints, 3). Units: Tesla/meter (T/m).
+            If None, gradients are assumed to be zero. Defaults to None.
         return_all_timepoints (bool, optional): If True, returns the magnetization
-            state at all time points. Otherwise, returns only the final state.
-            Defaults to False.
+            state at all time points. Defaults to False.
 
     Returns:
         torch.Tensor: Magnetization state.
             If return_all_timepoints is True: Shape (N_timepoints, Nx, Ny, Nz, 3).
             Else: Shape (Nx, Ny, Nz, 3).
-
-    Note:
-        This function currently iterates over spatial voxels for rotation and
-        relaxation steps. Future optimizations could involve batching these
-        operations if the core `rotate_magnetization` and `apply_relaxation`
-        functions are adapted for batch processing.
-        Assumes all input tensors are on the same PyTorch device.
     """
     device = rf_waveforms_per_channel.device
     num_channels = rf_waveforms_per_channel.shape[0]
     N_timepoints = rf_waveforms_per_channel.shape[1]
 
-    if b1_sensitivity_maps.shape[0] != num_channels:
-        raise ValueError("Number of channels in rf_waveforms_per_channel and b1_sensitivity_maps must match.")
+    if not isinstance(spatial_grid_m, torch.Tensor) or spatial_grid_m.ndim != 4 or spatial_grid_m.shape[3] != 3:
+        raise ValueError("spatial_grid_m must be a Tensor of shape (Nx, Ny, Nz, 3).")
+    Nx, Ny, Nz = spatial_grid_m.shape[:3]
 
-    Nx, Ny, Nz = b1_sensitivity_maps.shape[1], b1_sensitivity_maps.shape[2], b1_sensitivity_maps.shape[3]
+    if b1_sensitivity_maps.shape != (num_channels, Nx, Ny, Nz):
+        raise ValueError(f"b1_sensitivity_maps shape mismatch. Expected ({num_channels}, {Nx}, {Ny}, {Nz}), got {b1_sensitivity_maps.shape}")
 
-    # Basic shape validation for maps
     expected_spatial_shape = (Nx, Ny, Nz)
     if b0_map_hz.shape != expected_spatial_shape:
         raise ValueError(f"b0_map_hz shape mismatch. Expected {expected_spatial_shape}, got {b0_map_hz.shape}")
@@ -314,47 +308,67 @@ def bloch_simulate_ptx(
     if initial_magnetization.shape != (Nx, Ny, Nz, 3):
         raise ValueError(f"initial_magnetization shape mismatch. Expected {(*expected_spatial_shape, 3)}, got {initial_magnetization.shape}")
 
+    if gradient_waveforms_tm is not None:
+        if not isinstance(gradient_waveforms_tm, torch.Tensor) or gradient_waveforms_tm.ndim != 2 or gradient_waveforms_tm.shape[0] != N_timepoints or gradient_waveforms_tm.shape[1] != 3:
+            raise ValueError(f"gradient_waveforms_tm must be a Tensor of shape ({N_timepoints}, 3) or None.")
+        gradient_waveforms_tm = gradient_waveforms_tm.to(device)
+
     M = initial_magnetization.clone().to(device)
     b1_sensitivity_maps = b1_sensitivity_maps.to(device)
     b0_map_hz = b0_map_hz.to(device)
     T1_map_s = T1_map_s.to(device)
     T2_map_s = T2_map_s.to(device)
     rf_waveforms_per_channel = rf_waveforms_per_channel.to(device)
-
+    spatial_grid_m = spatial_grid_m.to(device)
 
     if return_all_timepoints:
         M_time_course = torch.zeros((N_timepoints, Nx, Ny, Nz, 3), dtype=M.dtype, device=device)
 
-    b0_map_tesla = b0_map_hz / gyromagnetic_ratio_hz_t
+    b0_map_hz_flat = b0_map_hz.reshape(-1) # Keep in Hz for now
 
     M_flat = M.reshape(-1, 3)
-    b0_map_tesla_flat = b0_map_tesla.reshape(-1)
     T1_map_s_flat = T1_map_s.reshape(-1)
     T2_map_s_flat = T2_map_s.reshape(-1)
     initial_M0_flat = initial_magnetization.reshape(-1, 3)[:, 2].clone().to(device)
+    spatial_grid_m_flat = spatial_grid_m.reshape(-1, 3) # Shape (N_voxels, 3)
 
-    b1_sens_flat = b1_sensitivity_maps.reshape(num_channels, -1)
+    b1_sens_flat = b1_sensitivity_maps.reshape(num_channels, -1) # Shape (num_channels, N_voxels)
     N_voxels = M_flat.shape[0]
 
     for t in range(N_timepoints):
-        current_rf_amps = rf_waveforms_per_channel[:, t]
+        current_rf_amps = rf_waveforms_per_channel[:, t] # Shape (num_channels)
+        # B1 eff = sum over channels ( rf_amp_channel[t] * B1_sens_channel_voxel )
+        b1_eff_t_tesla_flat = torch.sum(current_rf_amps.unsqueeze(1) * b1_sens_flat, dim=0) # Shape (N_voxels)
 
-        b1_eff_t_tesla_flat = torch.sum(current_rf_amps.unsqueeze(1) * b1_sens_flat, dim=0)
+        current_gradients_tm_t = None
+        if gradient_waveforms_tm is not None:
+            current_gradients_tm_t = gradient_waveforms_tm[t, :] # Shape (3,) [Gx, Gy, Gz] at time t
 
         for v_idx in range(N_voxels):
-            b1_eff_voxel_t = b1_eff_t_tesla_flat[v_idx]
+            b1_eff_voxel_t = b1_eff_t_tesla_flat[v_idx] # Complex scalar
 
             b_eff_x_tesla = b1_eff_voxel_t.real
             b_eff_y_tesla = b1_eff_voxel_t.imag
-            b_eff_z_tesla = b0_map_tesla_flat[v_idx]
 
-            B_eff_tesla_voxel = torch.stack([b_eff_x_tesla, b_eff_y_tesla, b_eff_z_tesla])
+            # Calculate Bz component from B0 map and gradients
+            # B0 map contribution (convert Hz to Tesla)
+            base_b0_field_tesla = b0_map_hz_flat[v_idx] / gyromagnetic_ratio_hz_t
+            total_b_eff_z_tesla = base_b0_field_tesla
+
+            if current_gradients_tm_t is not None:
+                vx, vy, vz = spatial_grid_m_flat[v_idx, 0], spatial_grid_m_flat[v_idx, 1], spatial_grid_m_flat[v_idx, 2]
+                # Gradient induced field = Gx*x + Gy*y + Gz*z (all in Tesla)
+                gradient_induced_field_tesla = (current_gradients_tm_t[0] * vx +
+                                                current_gradients_tm_t[1] * vy +
+                                                current_gradients_tm_t[2] * vz)
+                total_b_eff_z_tesla = total_b_eff_z_tesla + gradient_induced_field_tesla # Add gradient field in Tesla
+
+            B_eff_tesla_voxel = torch.stack([b_eff_x_tesla, b_eff_y_tesla, total_b_eff_z_tesla])
 
             M_voxel = M_flat[v_idx, :]
-
+            # Assumes rotate_magnetization and apply_relaxation are defined in the same file
             M_rotated = rotate_magnetization(M_voxel, B_eff_tesla_voxel, dt_s, gyromagnetic_ratio_hz_t)
             M_relaxed = apply_relaxation(M_rotated, dt_s, T1_map_s_flat[v_idx], T2_map_s_flat[v_idx], M0=initial_M0_flat[v_idx])
-
             M_flat[v_idx, :] = M_relaxed
 
         if return_all_timepoints:

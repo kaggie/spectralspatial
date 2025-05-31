@@ -14,6 +14,8 @@ from .pulse_validator import validate_pulse_performance, PulseValidationMetrics,
 from .universal_pulse_designer import UniversalPulseDesigner
 # Import from the new adiabatic CEST simulator
 from .adiabatic_cest_simulator import AdiabaticCESTSimulator
+# Import from the new spokes pulse designer
+from .spokes_pulse_designer import SpokesPulseDesigner
 
 __all__ = [
     'simulate_hard_pulse_profile',
@@ -28,5 +30,6 @@ __all__ = [
     'PulseValidationMetrics',
     'analyze_slice_profile',
     'UniversalPulseDesigner',
-    'AdiabaticCESTSimulator'
+    'AdiabaticCESTSimulator',
+    'SpokesPulseDesigner'
 ]
