@@ -253,11 +253,13 @@ def bloch_simulate_ptx(
     initial_magnetization: torch.Tensor,
     spatial_grid_m: torch.Tensor,
     gradient_waveforms_tm: torch.Tensor = None,
-    return_all_timepoints: bool = False
+    return_all_timepoints: bool = False,
+    return_b1_total_field_sq_t_v: bool = False # New parameter
 ):
     """
     Simulates the Bloch equations for parallel transmit (pTx) RF pulses
     on a 3D spatial grid, including effects of dynamic gradients.
+    Optionally returns the time-varying total B1 field squared magnitude.
 
     Args:
         rf_waveforms_per_channel (torch.Tensor): Complex RF waveforms for each
@@ -281,13 +283,25 @@ def bloch_simulate_ptx(
             If None, gradients are assumed to be zero. Defaults to None.
         return_all_timepoints (bool, optional): If True, returns the magnetization
             state at all time points. Defaults to False.
+        return_b1_total_field_sq_t_v (bool, optional): If True, the function also
+            returns the squared magnitude of the total B1 field |B1_total(voxel,t)|^2
+            at each voxel and timepoint. Defaults to False.
 
     Returns:
-        torch.Tensor: Magnetization state.
-            If return_all_timepoints is True: Shape (N_timepoints, Nx, Ny, Nz, 3).
-            Else: Shape (Nx, Ny, Nz, 3).
+        torch.Tensor or Tuple[torch.Tensor, torch.Tensor]:
+            - If `return_b1_total_field_sq_t_v` is False:
+                Magnetization state (torch.Tensor).
+                If `return_all_timepoints` is True: Shape (N_timepoints, Nx, Ny, Nz, 3).
+                Else: Shape (Nx, Ny, Nz, 3).
+            - If `return_b1_total_field_sq_t_v` is True:
+                A tuple: `(magnetization_result, b1_total_field_sq_all_timepoints)`.
+                `magnetization_result` is as described above.
+                `b1_total_field_sq_all_timepoints` (torch.Tensor): Squared B1 magnitude
+                at each voxel over time. Shape: (N_timepoints, Nx, Ny, Nz). Units: Tesla^2.
     """
     device = rf_waveforms_per_channel.device
+    dtype_real = initial_magnetization.dtype # Assuming initial_mag is real (float32 or float64)
+
     num_channels = rf_waveforms_per_channel.shape[0]
     N_timepoints = rf_waveforms_per_channel.shape[1]
 
@@ -311,62 +325,69 @@ def bloch_simulate_ptx(
     if gradient_waveforms_tm is not None:
         if not isinstance(gradient_waveforms_tm, torch.Tensor) or gradient_waveforms_tm.ndim != 2 or gradient_waveforms_tm.shape[0] != N_timepoints or gradient_waveforms_tm.shape[1] != 3:
             raise ValueError(f"gradient_waveforms_tm must be a Tensor of shape ({N_timepoints}, 3) or None.")
-        gradient_waveforms_tm = gradient_waveforms_tm.to(device)
+        gradient_waveforms_tm = gradient_waveforms_tm.to(device, dtype=dtype_real)
 
-    M = initial_magnetization.clone().to(device)
-    b1_sensitivity_maps = b1_sensitivity_maps.to(device)
-    b0_map_hz = b0_map_hz.to(device)
-    T1_map_s = T1_map_s.to(device)
-    T2_map_s = T2_map_s.to(device)
-    rf_waveforms_per_channel = rf_waveforms_per_channel.to(device)
-    spatial_grid_m = spatial_grid_m.to(device)
+    M = initial_magnetization.clone().to(device, dtype=dtype_real)
+    b1_sensitivity_maps = b1_sensitivity_maps.to(device) # Complex dtype preserved
+    b0_map_hz = b0_map_hz.to(device, dtype=dtype_real)
+    T1_map_s = T1_map_s.to(device, dtype=dtype_real)
+    T2_map_s = T2_map_s.to(device, dtype=dtype_real)
+    rf_waveforms_per_channel = rf_waveforms_per_channel.to(device) # Complex dtype preserved
+    spatial_grid_m = spatial_grid_m.to(device, dtype=dtype_real)
 
+    M_time_course = None
     if return_all_timepoints:
-        M_time_course = torch.zeros((N_timepoints, Nx, Ny, Nz, 3), dtype=M.dtype, device=device)
+        M_time_course = torch.zeros((N_timepoints, Nx, Ny, Nz, 3), dtype=dtype_real, device=device)
 
-    b0_map_hz_flat = b0_map_hz.reshape(-1) # Keep in Hz for now
+    b1_total_field_sq_all_timepoints = None
+    if return_b1_total_field_sq_t_v:
+        b1_total_field_sq_all_timepoints = torch.zeros((N_timepoints, Nx, Ny, Nz), dtype=dtype_real, device=device)
+
+    b0_map_hz_flat = b0_map_hz.reshape(-1)
+
 
     M_flat = M.reshape(-1, 3)
     T1_map_s_flat = T1_map_s.reshape(-1)
     T2_map_s_flat = T2_map_s.reshape(-1)
-    initial_M0_flat = initial_magnetization.reshape(-1, 3)[:, 2].clone().to(device)
-    spatial_grid_m_flat = spatial_grid_m.reshape(-1, 3) # Shape (N_voxels, 3)
+    initial_M0_flat = initial_magnetization.reshape(-1, 3)[:, 2].clone() # Already on device, correct dtype
+    spatial_grid_m_flat = spatial_grid_m.reshape(-1, 3)
 
-    b1_sens_flat = b1_sensitivity_maps.reshape(num_channels, -1) # Shape (num_channels, N_voxels)
+    b1_sens_flat = b1_sensitivity_maps.reshape(num_channels, -1)
     N_voxels = M_flat.shape[0]
 
     for t in range(N_timepoints):
-        current_rf_amps = rf_waveforms_per_channel[:, t] # Shape (num_channels)
-        # B1 eff = sum over channels ( rf_amp_channel[t] * B1_sens_channel_voxel )
-        b1_eff_t_tesla_flat = torch.sum(current_rf_amps.unsqueeze(1) * b1_sens_flat, dim=0) # Shape (N_voxels)
+        current_rf_amps = rf_waveforms_per_channel[:, t]
+        # b1_eff_t_tesla_flat is complex, shape (N_voxels,)
+        b1_eff_t_tesla_flat = torch.sum(current_rf_amps.unsqueeze(1) * b1_sens_flat, dim=0)
+
+        if return_b1_total_field_sq_t_v:
+            # |B1_total(voxel,t)|^2 = B1x^2 + B1y^2
+            b1_total_field_sq_all_timepoints[t, ...] = (torch.abs(b1_eff_t_tesla_flat)**2).reshape(Nx,Ny,Nz)
 
         current_gradients_tm_t = None
         if gradient_waveforms_tm is not None:
-            current_gradients_tm_t = gradient_waveforms_tm[t, :] # Shape (3,) [Gx, Gy, Gz] at time t
+            current_gradients_tm_t = gradient_waveforms_tm[t, :]
 
+        # Voxel loop for rotation and relaxation
         for v_idx in range(N_voxels):
-            b1_eff_voxel_t = b1_eff_t_tesla_flat[v_idx] # Complex scalar
+            b1_eff_voxel_t = b1_eff_t_tesla_flat[v_idx]
 
             b_eff_x_tesla = b1_eff_voxel_t.real
             b_eff_y_tesla = b1_eff_voxel_t.imag
 
-            # Calculate Bz component from B0 map and gradients
-            # B0 map contribution (convert Hz to Tesla)
             base_b0_field_tesla = b0_map_hz_flat[v_idx] / gyromagnetic_ratio_hz_t
             total_b_eff_z_tesla = base_b0_field_tesla
 
             if current_gradients_tm_t is not None:
                 vx, vy, vz = spatial_grid_m_flat[v_idx, 0], spatial_grid_m_flat[v_idx, 1], spatial_grid_m_flat[v_idx, 2]
-                # Gradient induced field = Gx*x + Gy*y + Gz*z (all in Tesla)
                 gradient_induced_field_tesla = (current_gradients_tm_t[0] * vx +
                                                 current_gradients_tm_t[1] * vy +
                                                 current_gradients_tm_t[2] * vz)
-                total_b_eff_z_tesla = total_b_eff_z_tesla + gradient_induced_field_tesla # Add gradient field in Tesla
+                total_b_eff_z_tesla = total_b_eff_z_tesla + gradient_induced_field_tesla
 
             B_eff_tesla_voxel = torch.stack([b_eff_x_tesla, b_eff_y_tesla, total_b_eff_z_tesla])
-
             M_voxel = M_flat[v_idx, :]
-            # Assumes rotate_magnetization and apply_relaxation are defined in the same file
+
             M_rotated = rotate_magnetization(M_voxel, B_eff_tesla_voxel, dt_s, gyromagnetic_ratio_hz_t)
             M_relaxed = apply_relaxation(M_rotated, dt_s, T1_map_s_flat[v_idx], T2_map_s_flat[v_idx], M0=initial_M0_flat[v_idx])
             M_flat[v_idx, :] = M_relaxed
@@ -374,7 +395,10 @@ def bloch_simulate_ptx(
         if return_all_timepoints:
             M_time_course[t, ...] = M_flat.reshape(Nx, Ny, Nz, 3)
 
-    if return_all_timepoints:
-        return M_time_course
+    # Determine final magnetization result
+    magnetization_result = M_time_course if return_all_timepoints else M_flat.reshape(Nx, Ny, Nz, 3)
+
+    if return_b1_total_field_sq_t_v:
+        return magnetization_result, b1_total_field_sq_all_timepoints
     else:
-        return M_flat.reshape(Nx, Ny, Nz, 3)
+        return magnetization_result
