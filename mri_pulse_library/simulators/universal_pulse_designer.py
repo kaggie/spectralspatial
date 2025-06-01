@@ -91,6 +91,7 @@ class UniversalPulseDesigner:
             raise ValueError("Last dimension of magnetization_xyz must be 3 (Mx, My, Mz).")
         m_xy = torch.norm(magnetization_xyz[..., :2], dim=-1, p=2)
         m_z = magnetization_xyz[..., 2]
+
         flip_angle_rad = torch.atan2(m_xy, m_z)
         return flip_angle_rad
 
@@ -298,6 +299,7 @@ if __name__ == '__main__':
             b1_maps_database=b1_maps_db, b0_maps_database=b0_maps_db,
             tissue_properties_database=tissue_props_db, num_iterations=3, learning_rate=0.01)
         print(f"design_pulse finished. RF shape: {optimized_rf.shape}, Mean abs: {torch.mean(torch.abs(optimized_rf)).item()}")
+
     except ValueError as e:
         print(f"Error during example: {e}")
     except Exception as e:

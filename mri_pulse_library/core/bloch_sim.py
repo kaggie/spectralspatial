@@ -345,6 +345,7 @@ def bloch_simulate_ptx(
 
     b0_map_hz_flat = b0_map_hz.reshape(-1)
 
+
     M_flat = M.reshape(-1, 3)
     T1_map_s_flat = T1_map_s.reshape(-1)
     T2_map_s_flat = T2_map_s.reshape(-1)

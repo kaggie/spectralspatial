@@ -294,6 +294,7 @@ if __name__ == '__main__':
         opt_rf, opt_grad = designer.design_spokes_pulse(
             b1_maps_subject_tesla=dummy_b1, b0_map_subject_hz=dummy_b0,
             tissue_properties_subject=dummy_tissue, num_iterations=3, learning_rate=0.01 # Reduced iterations
+
         )
         print(f"design_spokes_pulse finished.")
         print(f"Optimized RF shape: {opt_rf.shape}, Mean abs: {torch.mean(torch.abs(opt_rf)).item()}")
