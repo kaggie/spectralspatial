@@ -47,7 +47,12 @@ The library provides functions to generate a diverse range of RF pulses:
 *   **Multiband Pulses**:
     *   `MultibandPulseDesigner`: A dedicated tool in `mri_pulse_library.rf_pulses.multiband.designer` to generate simultaneous multiband pulses by phase/frequency modulation of a user-provided baseband pulse. Supports peak B1 control for the combined waveform.
     *   Scripted combination of SPSP designs also remains possible for custom/advanced approaches.
-*   **Future Directions**: Development plans include dedicated tools for Parallel Transmit (pTx) pulses and advanced small-tip angle pulse sequences.
+*   **Parallel Transmit (pTx) Pulses**: Tools for leveraging multiple transmit coils to improve B1+ field homogeneity and enable advanced spatial excitation.
+    *   `calculate_static_shims()`: Calculates static complex weights per channel for B1+ homogenization in a target ROI (see `mri_pulse_library.ptx.shimming`).
+    *   `STAPTxDesigner`: Designs multi-channel RF pulses for specified kT-points using the Small Tip Angle (STA) approximation (see `mri_pulse_library.ptx.sta_designer`).
+    *   Advanced Dynamic Designers: The library also includes `SpokesPulseDesigner` and `UniversalPulseDesigner` (in `mri_pulse_library.simulators`) which are optimization-based tools for designing dynamic pTx pulses using full Bloch simulations.
+
+*   **Future Directions**: Development plans include dedicated tools for advanced small-tip angle pulse sequences.
 
 ---
 
