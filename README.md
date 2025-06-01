@@ -33,11 +33,29 @@ This library aims to support a comprehensive suite of RF pulses for MRI. Current
 *   **Hard Pulses:** Simple rectangular pulses for basic excitation.
 *   **Slice-Selective Pulses:** Shaped pulses (e.g., sinc, Gaussian) for exciting specific anatomical slices. *Currently supported via SPSP designer for shaped pulses.*
 *   **Spectral-Spatial Pulses:** For simultaneous spatial and spectral selection. *Core feature of this library.*
-*   **Adiabatic Pulses:** Pulses robust to B1 inhomogeneities (e.g., BIR-4, Hyperbolic Secant, WURST, GOIA-WURST). *Planned for future implementation.*
-*   **Composite Pulses:** Series of sub-pulses for robust flip angles and phase response. *Planned for future implementation.*
+*   **Adiabatic Pulses:** Pulses robust to B1 inhomogeneities (e.g., BIR-4, Hyperbolic Secant, WURST, GOIA-WURST). *Placeholder implementations available (see 'Additional Pulse Types Implemented' section below).*
+*   **Composite Pulses:** Series of sub-pulses for robust flip angles and phase response. *Placeholder implementation available (see 'Additional Pulse Types Implemented' section below).*
 *   **Multiband Pulses:** Excite multiple slices simultaneously. *Supported via scripted combination and planned for dedicated design tools.*
 *   **Parallel Transmit (pTx) Pulses:** For B1 shimming and advanced excitation using multiple transmit coils. *Planned for future implementation.*
 *   **Small-Tip Angle Pulses:** For fast gradient echo sequences. *Supported via SPSP designer and Bloch simulation.*
+
+---
+
+## Additional Pulse Types Implemented
+
+This library now includes placeholder implementations for several advanced RF pulse types:
+
+### Adiabatic Pulses
+The following adiabatic pulses, known for their robustness to B1 inhomogeneities, have been added with basic placeholder structures:
+- **BIR-4 (B1-Insensitive Rotation):** Implemented in `mri_pulse_library.rf_pulses.adiabatic.bir4_pulse.generate_bir4_pulse()`.
+- **WURST (Wideband, Uniform Rate, Smooth Truncation):** Implemented in `mri_pulse_library.rf_pulses.adiabatic.wurst_pulse.generate_wurst_pulse()`.
+- **GOIA-WURST (Gradient Offset Independent Adiabaticity):** Implemented in `mri_pulse_library.rf_pulses.adiabatic.goia_wurst_pulse.generate_goia_wurst_pulse()`. This pulse type also returns a placeholder gradient waveform.
+
+### Composite Pulses
+A generic function for generating composite pulses from a sequence of sub-pulses (currently modeled as hard pulses) has been implemented:
+- **Generic Composite Pulse Sequence:** Implemented in `mri_pulse_library.rf_pulses.composite.composite_pulse.generate_composite_pulse_sequence()`. This allows for the construction of various composite pulses by defining the properties of their constituent sub-pulses.
+
+These implementations serve as a foundation for future development and more detailed characterization.
 
 ---
 

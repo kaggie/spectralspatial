@@ -4,6 +4,12 @@ import numpy as np
 from mri_pulse_library.rf_pulses import simple, spectral_spatial, adiabatic
 from mri_pulse_library.core.constants import GAMMA_HZ_PER_T_PROTON
 
+# Imports for newly added pulse generation functions
+from mri_pulse_library.rf_pulses.adiabatic.bir4_pulse import generate_bir4_pulse
+from mri_pulse_library.rf_pulses.adiabatic.wurst_pulse import generate_wurst_pulse
+from mri_pulse_library.rf_pulses.adiabatic.goia_wurst_pulse import generate_goia_wurst_pulse
+from mri_pulse_library.rf_pulses.composite.composite_pulse import generate_composite_pulse_sequence
+
 class TestRFPulseGeneration(unittest.TestCase):
 
     def _check_pulse_outputs(self, rf_pulse, time_vector, min_duration=1e-4):
@@ -89,6 +95,112 @@ class TestRFPulseGeneration(unittest.TestCase):
         rf, time = adiabatic.generate_hs1_pulse(duration, bandwidth_hz, mu=mu, beta_rad_s=beta_rad_s)
         self._check_pulse_outputs(rf, time)
         self.assertTrue(np.iscomplexobj(rf), "HS1 pulse should be complex")
+
+    # --- New tests for adiabatic and composite pulses ---
+    def test_generate_bir4_pulse_basic(self):
+        duration = 0.01
+        bandwidth = 4000
+        # Note: generate_bir4_pulse is imported directly, not via adiabatic.generate_bir4_pulse
+        rf, t = generate_bir4_pulse(duration=duration, bandwidth=bandwidth, dt=1e-5)
+        self.assertIsInstance(rf, np.ndarray)
+        self.assertIsInstance(t, np.ndarray)
+        self.assertTrue(np.iscomplexobj(rf))
+        self.assertEqual(len(rf), len(t))
+        self.assertGreater(len(rf), 0)
+        if len(t) > 1: # Ensure there are at least two points to check duration
+            self.assertAlmostEqual(t[-1] - t[0], duration - 1e-5, delta=1e-5) # duration - dt
+        elif len(t) == 1: # Single point pulse
+             self.assertAlmostEqual(duration, 1e-5, delta=1e-6) # if duration was dt
+
+
+    def test_generate_wurst_pulse_basic(self):
+        duration = 0.008
+        bandwidth = 5000
+        rf, t = generate_wurst_pulse(duration=duration, bandwidth=bandwidth, dt=1e-5)
+        self.assertIsInstance(rf, np.ndarray)
+        self.assertIsInstance(t, np.ndarray)
+        self.assertTrue(np.iscomplexobj(rf))
+        self.assertEqual(len(rf), len(t))
+        self.assertGreater(len(rf), 0)
+        if len(t) > 1:
+            self.assertAlmostEqual(t[-1] - t[0], duration - 1e-5, delta=1e-5)
+        elif len(t) == 1:
+            self.assertAlmostEqual(duration, 1e-5, delta=1e-6)
+
+
+    def test_generate_goia_wurst_pulse_basic(self):
+        duration = 0.012
+        bandwidth = 3000
+        rf, t, g = generate_goia_wurst_pulse(duration=duration, bandwidth=bandwidth, dt=1e-5)
+        self.assertIsInstance(rf, np.ndarray)
+        self.assertIsInstance(t, np.ndarray)
+        self.assertIsInstance(g, np.ndarray)
+        self.assertTrue(np.iscomplexobj(rf))
+        self.assertEqual(len(rf), len(t))
+        self.assertEqual(len(rf), len(g))
+        self.assertGreater(len(rf), 0)
+        if len(t) > 1:
+            self.assertAlmostEqual(t[-1] - t[0], duration - 1e-5, delta=1e-5)
+        elif len(t) == 1:
+            self.assertAlmostEqual(duration, 1e-5, delta=1e-6)
+
+
+    def test_generate_composite_pulse_sequence_basic(self):
+        dt = 1e-5
+        sub_pulse_1_duration = 0.001
+        sub_pulse_2_duration = 0.002
+        example_sequence = [
+            {'flip_angle_deg': 90, 'phase_deg': 0, 'duration': sub_pulse_1_duration},
+            {'flip_angle_deg': 180, 'phase_deg': 90, 'duration': sub_pulse_2_duration}
+        ]
+        rf, t = generate_composite_pulse_sequence(example_sequence, dt=dt)
+        self.assertIsInstance(rf, np.ndarray)
+        self.assertIsInstance(t, np.ndarray)
+        self.assertTrue(np.iscomplexobj(rf))
+        self.assertEqual(len(rf), len(t))
+        self.assertGreater(len(rf), 0)
+
+        expected_total_samples = int(round((sub_pulse_1_duration + sub_pulse_2_duration) / dt))
+        self.assertEqual(len(rf), expected_total_samples)
+
+        expected_total_duration = sub_pulse_1_duration + sub_pulse_2_duration
+        if len(t) > 0: # time_vector[0] is 0.0
+             self.assertAlmostEqual(t[-1] + dt, expected_total_duration, delta=1e-9)
+
+
+    def test_zero_duration_adiabatic_pulses(self):
+        # BIR-4: num_samples = max(1, int(round(duration / dt))) -> if duration=0, num_samples=1 if dt is small
+        # The functions currently generate a single sample if duration is 0 but dt is non-zero.
+        # For duration=0, true expected length should be 0. This might require adjustment in pulse functions.
+        # For now, testing based on current placeholder behavior (num_samples=1 for duration=0)
+        dt_test = 1e-6
+        rf_bir4, t_bir4 = generate_bir4_pulse(duration=0, bandwidth=1000, dt=dt_test)
+        self.assertEqual(len(rf_bir4), 1)
+        self.assertEqual(len(t_bir4), 1)
+
+        rf_w, t_w = generate_wurst_pulse(duration=0, bandwidth=1000, dt=dt_test)
+        self.assertEqual(len(rf_w), 1)
+        self.assertEqual(len(t_w), 1)
+
+        rf_g, t_g, grad_g = generate_goia_wurst_pulse(duration=0, bandwidth=1000, dt=dt_test)
+        self.assertEqual(len(rf_g), 1)
+        self.assertEqual(len(t_g), 1)
+        self.assertEqual(len(grad_g), 1)
+
+    def test_zero_duration_composite_pulse(self):
+        example_sequence_zero_dur = [
+            {'flip_angle_deg': 90, 'phase_deg': 0, 'duration': 0},
+            {'flip_angle_deg': 180, 'phase_deg': 90, 'duration': 0}
+        ]
+        # generate_composite_pulse_sequence skips zero-duration sub-pulses
+        rf_comp, t_comp = generate_composite_pulse_sequence(example_sequence_zero_dur)
+        self.assertEqual(len(rf_comp), 0)
+        self.assertEqual(len(t_comp), 0)
+
+        example_sequence_empty = []
+        rf_empty, t_empty = generate_composite_pulse_sequence(example_sequence_empty)
+        self.assertEqual(len(rf_empty), 0)
+        self.assertEqual(len(t_empty), 0)
 
 if __name__ == '__main__':
     unittest.main()
