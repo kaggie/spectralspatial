@@ -8,4 +8,5 @@ from .composite_pulse import generate_composite_pulse_sequence
 # from .optimal_control_pulses import design_optimal_control_pulse # Example: changed from optimal_control.py to make it clear
 # from .adiabatic_composite import design_adiabatic_composite_pulse # Example
 
-__all__ = ['generate_composite_pulse_sequence']
+from .standard_composite_pulses import generate_refocusing_90x_180y_90x
+__all__ = ['generate_composite_pulse_sequence', 'generate_refocusing_90x_180y_90x']
