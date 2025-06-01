@@ -3,7 +3,7 @@
 Welcome to the **MRI Pulse Design Library**, a versatile Python-based toolkit engineered for the design, simulation, and analysis of a wide array of Radiofrequency (RF) pulses used in Magnetic Resonance Imaging (MRI). While featuring a powerful core for **spectral-spatial (SPSP) RF pulse design**, this library is expanding to provide a comprehensive suite for various MRI applications, from research to clinical deployment.
 
 The initial tools are built with inspiration from the Matbab-based tools of Peder Larson. Here they are implemented with pytorch vectoris/zations, and expanded on with other pulse design/er ideas. https://github.com/LarsonLab/Spectral-Spatial-RF-Pulse-Design 
-The parallelised, multiband, and adiabatic transmit tools utilise the spectral spatial core.
+The parallel, multiband, and adiabatic transmit tools utilise the spectral spatial core.
 
 Built on PyTorch, this library leverages GPU acceleration for computationally intensive tasks and offers seamless interoperability with NumPy and MATLAB.
 
