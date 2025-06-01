@@ -6,5 +6,6 @@
     *   [[WURST Adiabatic Pulse | WURSTPulse]]
     *   [[GOIA-WURST Adiabatic Pulse | GOIAWURSTPulse]]
     *   [[Composite Pulses | StandardCompositePulses]]
+    *   [[Simultaneous Multiband Pulse Design | MultibandPulseDesign]]
     *   [pTx Spokes Pulses](./PTxSpokesPulses.md)
     *   [SLR Pulses](./SLRPulses.md)

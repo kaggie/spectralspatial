@@ -44,7 +44,9 @@ The library provides functions to generate a diverse range of RF pulses:
 *   **Composite Pulses**: Sequences of sub-pulses designed for improved flip angle accuracy and phase response.
     *   `generate_composite_pulse_sequence()`: A generic function to create composite pulses from 'hard', 'sinc', or 'gaussian' sub-pulses, with support for inter-pulse delays.
     *   `generate_refocusing_90x_180y_90x()`: A specific implementation of the 90x-180y-90x refocusing pulse.
-*   **Multiband Pulses**: *Currently supported via scripted combination of SPSP designs; dedicated design tools are planned.*
+*   **Multiband Pulses**:
+    *   `MultibandPulseDesigner`: A dedicated tool in `mri_pulse_library.rf_pulses.multiband.designer` to generate simultaneous multiband pulses by phase/frequency modulation of a user-provided baseband pulse. Supports peak B1 control for the combined waveform.
+    *   Scripted combination of SPSP designs also remains possible for custom/advanced approaches.
 *   **Future Directions**: Development plans include dedicated tools for Parallel Transmit (pTx) pulses and advanced small-tip angle pulse sequences.
 
 ---
