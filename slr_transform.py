@@ -3,6 +3,7 @@ import math
 from typing import List, Tuple
 import torch.nn.functional as F # For conv1d
 from mri_pulse_library.core.dsp_utils import spectral_factorization_cepstral
+from mri_pulse_library.core.bloch_sim import bloch_simulate # Added for LTA method
 from fir_designer import FIRFilterDesigner # Assuming fir_designer.py is at root
 
 class SLRTransform:
@@ -13,6 +14,7 @@ class SLRTransform:
         """Initializes the SLRTransform class."""
         self._a_coeffs_last = None
         self._b_coeffs_last = None
+        self.verbose = False # Add a verbose flag, can be set by user
 
     def magnetization_to_b_poly_specs(
         self, 
@@ -209,44 +211,23 @@ class SLRTransform:
         
         return b_poly_rip_tensor, b_poly_amp_tensor, adjusted_flip_angle_rad
 
-    def b_poly_to_rf(self, b_poly_coeffs: torch.Tensor, device: str = 'cpu') -> torch.Tensor:
-        """
-        Converts a B-polynomial (filter coefficients) to an RF pulse segment 
-        (alpha polynomial coefficients). Equivalent to b2rf.c from Pauly's tools.
-        NOTE: This is a placeholder and the core SLR math is not yet implemented.
-        """
-        # TODO: Implement the actual math for b2rf (e.g., inverse FFT, phase adjustments)
-        # For now, as a placeholder, if this is for small tip angle approximation,
-        # the b_poly_coeffs might be directly proportional to the RF pulse.
-        # However, true SLR involves complex polynomials a and b.
-        # rf(t) ~ (a(t)b*(-t) - a*(-t)b(t)) / (|a(t)|^2 + |b(t)|^2) (not quite)
-        # More simply, for small tip, rf ~ B. For SLR, rf requires finding alpha from beta.
-        # Beta(z) = FIR filter. Alpha(z)Alpha*(1/z*) + Beta(z)Beta*(1/z*) = 1
-        # This involves spectral factorization of 1 - Beta(z)Beta*(1/z*) to get Alpha(z).
-        # Then RF(t) is related to IFFT(Alpha(z)) and IFFT(Beta(z)).
-        # raise NotImplementedError("SLR B-polynomial to RF conversion (b2rf equivalent) is not yet implemented.")
-    # Replacing with the full implementation:
     def b_poly_to_rf(self,
                      b_poly_coeffs: torch.Tensor,
                      pulse_type: str = 'ex',
-                     nfft_factor: int = 4, # Factor to determine NFFT based on input length
+                     nfft_factor: int = 4,
                      device: str = 'cpu'
                      ) -> torch.Tensor:
         """
         Converts B-polynomial coefficients (Beta(z)) to a complex RF pulse waveform.
 
-        This implementation uses spectral factorization to find A(z) such that
-        A(z)A*(1/z*) + B(z)B*(1/z*) = 1, and then calculates the RF pulse
-        based on A(z) and B(z).
-
         Args:
             b_poly_coeffs (torch.Tensor): 1D tensor of real coefficients for the
                                           B-polynomial B(z). Length L_b.
-            pulse_type (str, optional): Type of pulse. Currently supports 'ex' (excitation).
-                                        Future support for 'se', 'inv', 'sat'. Defaults to 'ex'.
+            pulse_type (str, optional): Type of pulse. Supports 'ex' (excitation)
+                                        and 'se' (spin-echo/refocusing).
+                                        Defaults to 'ex'.
             nfft_factor (int, optional): Factor to multiply with polynomial length to get NFFT
-                                         for spectral operations. Ensures sufficient resolution.
-                                         Defaults to 4.
+                                         for spectral operations. Defaults to 4.
             device (str, optional): PyTorch device ('cpu' or 'cuda'). Defaults to 'cpu'.
 
         Returns:
@@ -254,79 +235,62 @@ class SLRTransform:
                           waveform (unitless shape), of the same length as b_poly_coeffs.
         """
         dev = torch.device(device)
-        # Ensure b_coeffs is float32 for internal calculations, to match spectral_factorization_cepstral if it defaults to float32
         b_coeffs = b_poly_coeffs.to(device=dev, dtype=torch.float32)
 
         if b_coeffs.ndim != 1:
             raise ValueError("b_poly_coeffs must be a 1D tensor.")
-
         L_b = len(b_coeffs)
         if L_b == 0:
             return torch.tensor([], device=dev, dtype=torch.complex64)
 
-        # --- 1. Compute P(z) = 1 - B(z)B*(z^-1) ---
-        # B*(z^-1) for real b_coeffs is just b_coeffs reversed in time.
         b_coeffs_rev = torch.flip(b_coeffs, dims=[0])
-
+        # Ensure inputs to conv1d are 3D: (batch, in_channels, width)
         bb_star_coeffs = F.conv1d(b_coeffs.view(1, 1, -1),
                                   b_coeffs_rev.view(1, 1, -1),
-                                  padding='full').squeeze() # Length 2*L_b - 1
+                                  padding='full').squeeze() # Result is 1D
 
+        # P(z) = 1 - B(z)B*(z^-1)
+        # Ensure p_coeffs has the same length as bb_star_coeffs
         p_coeffs = torch.zeros_like(bb_star_coeffs, device=dev, dtype=torch.float32)
-        center_idx_p = L_b - 1 # Center of p_coeffs (length 2*L_b - 1)
+        center_idx_p = L_b - 1 # Center of bb_star_coeffs (which is 2*L_b - 1 long)
         p_coeffs[center_idx_p] = 1.0
         p_coeffs = p_coeffs - bb_star_coeffs
 
-        # --- 2. Spectral Factorization of P(z) to get A(z) ---
-        # A(z) should also have length L_b
-        # Ensure nfft is at least the length of p_coeffs for spectral_factorization_cepstral
         min_nfft_spec_fact = len(p_coeffs)
         nfft_spec_fact = nfft_factor * min_nfft_spec_fact
         if nfft_spec_fact < min_nfft_spec_fact : nfft_spec_fact = min_nfft_spec_fact
 
-
-        # Make sure spectral_factorization_cepstral is imported
-        # from mri_pulse_library.core.dsp_utils import spectral_factorization_cepstral
         a_coeffs = spectral_factorization_cepstral(
             p_coeffs_real_symmetric=p_coeffs,
-            target_a_length=L_b,
+            target_a_length=L_b, # A(z) should have same length as B(z)
             nfft=nfft_spec_fact
         ).to(device=dev, dtype=torch.float32)
 
-        # Store for potential debugging or advanced checks (optional)
-        self._a_coeffs_last = a_coeffs
-        self._b_coeffs_last = b_coeffs
+        self._a_coeffs_last = a_coeffs.clone()
+        self._b_coeffs_last = b_coeffs.clone()
 
-        # --- 3. Calculate RF pulse from A(z) and B(z) ---
         min_nfft_rf = L_b
         nfft_rf = nfft_factor * min_nfft_rf
         if nfft_rf < min_nfft_rf: nfft_rf = min_nfft_rf
 
+        B_omega = torch.fft.fft(b_coeffs, n=nfft_rf)
+        epsilon = 1e-12
 
-        if pulse_type == 'ex':
-            # For excitation: RF(z) = B(z) / A_star_reflected(z)
-            # A_star_reflected(z) means A*(1/z*). For real a_coeffs, this is time-reversed a_coeffs.
+        if pulse_type == 'ex' or pulse_type == 'inv':
             a_coeffs_star_reflected = torch.flip(a_coeffs, dims=[0])
-
-            B_omega = torch.fft.fft(b_coeffs, n=nfft_rf)
             A_star_reflected_omega = torch.fft.fft(a_coeffs_star_reflected, n=nfft_rf)
-
-            RF_omega = B_omega / (A_star_reflected_omega + 1e-12) # Add epsilon for stability
-
-            rf_pulse_full = torch.fft.ifft(RF_omega)
-            rf_pulse = rf_pulse_full[:L_b].to(dtype=torch.complex64)
-
-        # elif pulse_type in ['se', 'inv', 'sat']:
-            # For refocusing (symmetric B(z)): RF(z) = B(z) / A(z)
-            # A_omega = torch.fft.fft(a_coeffs, n=nfft_rf)
-            # B_omega = torch.fft.fft(b_coeffs, n=nfft_rf)
-            # RF_omega = B_omega / (A_omega + 1e-12) # Add epsilon
-            # rf_pulse_full = torch.fft.ifft(RF_omega)
-            # rf_pulse = rf_pulse_full[:L_b].to(dtype=torch.complex64)
-            # raise NotImplementedError(f"SLR RF calculation for pulse_type '{pulse_type}' is not fully verified/implemented yet.")
+            RF_omega = B_omega / (A_star_reflected_omega + epsilon)
+        elif pulse_type == 'se':
+            A_omega = torch.fft.fft(a_coeffs, n=nfft_rf)
+            RF_omega = B_omega / (A_omega + epsilon)
+        # elif pulse_type == 'sat':
+            # Saturation pulses might also use B/A*_reflected or B/A depending on exact properties
+            # raise NotImplementedError(f"SLR RF calculation for pulse_type 'sat' is not yet implemented.")
         else:
-            raise NotImplementedError(f"SLR RF calculation for pulse_type '{pulse_type}' is not yet implemented.")
+            raise NotImplementedError(f"SLR RF calculation for pulse_type '{pulse_type}' is not yet implemented (e.g., 'sat').")
 
+        rf_pulse_full = torch.fft.ifft(RF_omega)
+        rf_pulse = rf_pulse_full[:L_b].to(dtype=torch.complex64)
         return rf_pulse
 
     def design_rf_pulse_from_mag_specs(

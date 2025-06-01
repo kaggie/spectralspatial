@@ -119,7 +119,7 @@ The `spectralspatial` project aims to provide a comprehensive environment for RF
 
 ### Core Simulation & Design Tools
 -   **Bloch Equation Solvers:** For 1D, 2D, and 3D magnetization dynamics. (Multi-pool support planned).
--   **Advanced Pulse Design Algorithms:** SLR (partially supported), Optimal Control (future), dedicated tools for Adiabatic/Composite/Multiband/pTx pulses (partially implemented, ongoing development).
+-   **Advanced Pulse Design Algorithms:** Shinnar-Le Roux (SLR) tools (`SLRTransform` class) for designing slice-selective Small-Tip Angle (STA) excitation, refocusing, and inversion pulses with precise profile control. Includes a method for iterative Large-Tip Angle (LTA) correction of excitation pulses., Optimal Control (future), dedicated tools for Adiabatic/Composite/Multiband/pTx pulses (partially implemented, ongoing development).
 -   **VERSE Optimization:** For SAR reduction in SPSP pulses (supported).
 
 ### Realistic Environment Modeling
