@@ -9,12 +9,7 @@ from mri_pulse_library.rf_pulses.adiabatic.bir4_pulse import generate_bir4_pulse
 from mri_pulse_library.rf_pulses.adiabatic.wurst_pulse import generate_wurst_pulse
 from mri_pulse_library.rf_pulses.adiabatic.goia_wurst_pulse import generate_goia_wurst_pulse
 from mri_pulse_library.rf_pulses.composite.composite_pulse import generate_composite_pulse_sequence
-# Simple pulse generators are used by the enhanced composite pulse function
-# Importing them here directly is not strictly necessary if only testing composite_pulse_sequence
-# but good for clarity or if individual simple pulses were also tested here.
-# from mri_pulse_library.rf_pulses.simple.hard_pulse import generate_hard_pulse
-# from mri_pulse_library.rf_pulses.simple.sinc_pulse import generate_sinc_pulse
-# from mri_pulse_library.rf_pulses.simple.gaussian_pulse import generate_gaussian_pulse
+from mri_pulse_library.rf_pulses.composite.standard_composite_pulses import generate_refocusing_90x_180y_90x
 
 
 class TestRFPulseGeneration(unittest.TestCase):
@@ -551,11 +546,75 @@ class TestRFPulseGeneration(unittest.TestCase):
         self.assertEqual(len(rf_empty_list), 0)
         self.assertEqual(len(t_empty_list), 0)
 
+    # --- Standard Composite Pulse Tests ---
+    def test_generate_refocusing_90x_180y_90x_basic(self):
+        dt = 1e-5
+        duration_90 = 0.001
+        duration_180 = 0.0005
+        rf, t = generate_refocusing_90x_180y_90x(duration_90_s=duration_90, duration_180_s=duration_180, dt=dt)
+        self.assertIsInstance(rf, np.ndarray)
+        self.assertIsInstance(t, np.ndarray)
+        self.assertTrue(np.iscomplexobj(rf))
+        self.assertEqual(len(rf), len(t))
+        expected_total_duration = 2 * duration_90 + duration_180
+        expected_total_samples = int(round(expected_total_duration / dt))
+        self.assertEqual(len(rf), expected_total_samples)
+        if expected_total_samples > 0:
+            self.assertGreater(np.max(np.abs(rf)), 0)
+        samples_90 = int(round(duration_90 / dt))
+        samples_180 = int(round(duration_180 / dt))
+        if samples_90 > 0:
+            segment1_rf = rf[:samples_90]
+            non_zero_s1 = segment1_rf[np.abs(segment1_rf) > 1e-9]
+            if len(non_zero_s1) > 0:
+                mean_phase_s1 = np.mean(np.angle(non_zero_s1, deg=True))
+                self.assertAlmostEqual(mean_phase_s1, 0.0, delta=1.0)
+        if samples_180 > 0:
+            segment2_rf = rf[samples_90 : samples_90 + samples_180]
+            non_zero_s2 = segment2_rf[np.abs(segment2_rf) > 1e-9]
+            if len(non_zero_s2) > 0:
+                mean_phase_s2 = np.mean(np.angle(non_zero_s2, deg=True))
+                self.assertAlmostEqual(mean_phase_s2, 90.0, delta=1.0)
+        if samples_90 > 0 and len(rf) == expected_total_samples:
+            segment3_rf = rf[samples_90 + samples_180:]
+            non_zero_s3 = segment3_rf[np.abs(segment3_rf) > 1e-9]
+            if len(non_zero_s3) > 0:
+                mean_phase_s3 = np.mean(np.angle(non_zero_s3, deg=True))
+                self.assertAlmostEqual(mean_phase_s3, 0.0, delta=1.0)
+
+    def test_generate_refocusing_90x_180y_90x_zero_duration_subpulses(self):
+        dt = 1e-5
+        rf_all_zero, t_all_zero = generate_refocusing_90x_180y_90x(0, 0, dt=dt)
+        self.assertEqual(len(rf_all_zero), 0)
+        duration_90 = 0.001
+        rf_180_zero, t_180_zero = generate_refocusing_90x_180y_90x(duration_90, 0, dt=dt)
+        expected_samples_180_zero = int(round((2 * duration_90) / dt))
+        self.assertEqual(len(rf_180_zero), expected_samples_180_zero)
+        samples_90 = int(round(duration_90/dt))
+        if samples_90 > 0:
+            s1 = rf_180_zero[:samples_90][np.abs(rf_180_zero[:samples_90]) > 1e-9]
+            s2 = rf_180_zero[samples_90:][np.abs(rf_180_zero[samples_90:]) > 1e-9]
+            if len(s1)>0: self.assertAlmostEqual(np.mean(np.angle(s1, deg=True)), 0, delta=1)
+            if len(s2)>0: self.assertAlmostEqual(np.mean(np.angle(s2, deg=True)), 0, delta=1)
+        duration_180 = 0.0005
+        rf_90_zero, t_90_zero = generate_refocusing_90x_180y_90x(0, duration_180, dt=dt)
+        expected_samples_90_zero = int(round(duration_180 / dt))
+        self.assertEqual(len(rf_90_zero), expected_samples_90_zero)
+        s_180y = rf_90_zero[np.abs(rf_90_zero) > 1e-9]
+        if len(s_180y) > 0:
+            self.assertAlmostEqual(np.mean(np.angle(s_180y, deg=True)), 90, delta=1)
+
+    def test_refocusing_pulse_subpulse_type_error(self):
+        with self.assertRaises(NotImplementedError):
+            generate_refocusing_90x_180y_90x(
+                duration_90_s=0.001,
+                duration_180_s=0.0005,
+                subpulse_type='sinc'
+            )
+
     # --- General Adiabatic Zero Duration Test ---
     def test_zero_duration_adiabatic_pulses(self):
-        # BIR-4, WURST, and GOIA-WURST are now tested by their own detailed zero duration tests.
-        # This test is now empty as all specific adiabatic pulses covered have their own detailed tests.
-        pass
+        pass # Now covered by specific detailed zero duration tests for each adiabatic pulse type
 
 if __name__ == '__main__':
     unittest.main()
